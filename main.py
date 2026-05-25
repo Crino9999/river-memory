@@ -1,26 +1,39 @@
 """River 记忆系统入口"""
-import json, requests
-from config import API_BASE, API_KEY, MODEL
+import json, time, requests
+from config import API_BASE, API_KEY, MODEL, LLM_MAX_RETRIES, LLM_RETRY_DELAY, LLM_TIMEOUT, TOP_K
 from core.intent import classify, STATUS, PROCESS, CHAT
 from core.associative import associative_search
 from core.eventstream import query_stream
 from core.memory import EventStream
 from core.store import MemoryStore
+from core.logger import get_logger
+
+log = get_logger(__name__)
 
 def llm(prompt: str, max_tokens: int = 512) -> str:
-    """调用LLM（OpenAI兼容接口）"""
-    if not API_KEY:
-        return "[LLM未配置]"
-    resp = requests.post(f"{API_BASE}/chat/completions", headers={
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-    }, json={
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "temperature": 0.7,
-    }, timeout=60)
-    return resp.json()["choices"][0]["message"]["content"]
+    last_err = None
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            if not API_KEY:
+                return "[LLM未配置]"
+            resp = requests.post(f"{API_BASE}/chat/completions", headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json",
+            }, json={
+                "model": MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": 0.7,
+            }, timeout=LLM_TIMEOUT)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            last_err = e
+            log.warning("LLM call attempt %d/%d failed: %s", attempt + 1, LLM_MAX_RETRIES, e)
+            if attempt < LLM_MAX_RETRIES - 1:
+                time.sleep(LLM_RETRY_DELAY * (attempt + 1))
+    log.error("LLM call failed after %d retries: %s", LLM_MAX_RETRIES, last_err)
+    return "[LLM调用失败]"
 
 def recall(
     user_input: str,
@@ -37,30 +50,35 @@ def recall(
     3. 事件流索引 → 按意图选视图
     4. LLM生成回复
     """
+    log.info("recall input='%s' date=%s people=%s env=%s", user_input[:50], current_date, present_people, current_env)
+
     intent = classify(user_input)
-    hits = associative_search(user_input, current_date, present_people, current_env, store)
-    print(f"  [意图] {intent}  [命中记忆数] {len(hits)}")
+    hits = associative_search(user_input, current_date, present_people, current_env, store, top_k=TOP_K)
+    log.info("intent=%s hits=%d", intent, len(hits))
 
     if not hits:
-        return llm(f"你是{character_name}。用户说：「{user_input}」。自然地回复。")
+        prompt = f"你是{character_name}。用户说：「{user_input}」。自然地回复。"
+        log.info("recall: no hits, direct chat")
+        return llm(prompt)
 
-    # 按事件流分组（用 sources 字段判断语义命中）
     streams = {}
     semantic_ids = set()
     for hit in hits:
         mem = hit.memory
         if mem.event_stream_id not in streams:
-            stream_mems = store.get_by_stream(mem.event_stream_id)
-            streams[mem.event_stream_id] = EventStream(mem.event_stream_id, stream_mems)
+            try:
+                stream_mems = store.get_by_stream(mem.event_stream_id)
+                if stream_mems:
+                    streams[mem.event_stream_id] = EventStream(mem.event_stream_id, stream_mems)
+            except Exception as e:
+                log.warning("Failed to load stream %s: %s", mem.event_stream_id, e)
         if "semantic" in hit.sources:
             semantic_ids.add(mem.memory_id)
 
-    # 事件流索引 → 视图选择
     context_memories = []
     for sid, stream in streams.items():
         context_memories.extend(query_stream(stream, intent, semantic_ids))
 
-    # 去重排序
     seen = set()
     final = []
     for mem in context_memories:
@@ -69,7 +87,8 @@ def recall(
             final.append(mem)
     final.sort(key=lambda m: m.timestamp, reverse=True)
 
-    # 构建上下文
+    log.info("recall: selected %d context memories from %d streams", len(final), len(streams))
+
     context = "\n".join(
         f"- [{m.timestamp}] {m.content}{' [状态: '+m.status_update+']' if m.status_update else ''}"
         for m in final

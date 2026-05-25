@@ -2,3 +2,5 @@ chromadb
 scikit-learn
 numpy
 jieba
+sentence-transformers>=2.0.0
+requests

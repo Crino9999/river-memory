@@ -5,8 +5,10 @@ from chromadb.config import Settings
 from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
 import jieba
-from config import CHROMA_DIR, DB_PATH
+from config import CHROMA_DIR, DB_PATH, USE_REAL_EMBED
 from core.memory import Memory
+
+SCHEMA_VERSION = 2
 
 def _tokenize(text: str) -> str:
     """中文分词，空格分隔"""
@@ -23,8 +25,29 @@ _SEED_CORPUS = [
 _vec = TfidfVectorizer(max_features=128)
 _vec.fit(_SEED_CORPUS)
 
+_real_model = None
+
+def _get_real_model():
+    global _real_model
+    if _real_model is None:
+        if not USE_REAL_EMBED:
+            _real_model = False
+            return None
+        try:
+            from sentence_transformers import SentenceTransformer
+            from config import EMBED_MODEL
+            _real_model = SentenceTransformer(EMBED_MODEL)
+        except Exception:
+            _real_model = False
+    return _real_model if _real_model else None
+
 def embed_texts(texts: List[str]) -> List[List[float]]:
-    """纯本地嵌入：jieba分词 → TF-IDF transform → 128维"""
+    """嵌入：优先使用 sentence-transformers 真实模型，降级到 TF-IDF"""
+    model = _get_real_model()
+    if model:
+        embeddings = model.encode(texts, normalize_embeddings=True)
+        return [list(vec.astype(float)) for vec in embeddings]
+
     global _vec
     tokenized = [_tokenize(t) for t in texts]
     tfidf = _vec.transform(tokenized).toarray()
@@ -48,6 +71,7 @@ class MemoryStore:
         self._collection = self._chroma.get_or_create_collection("river_memories")
 
         self._db = sqlite3.connect(DB_PATH, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
         self._db.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 memory_id TEXT PRIMARY KEY,
@@ -59,7 +83,44 @@ class MemoryStore:
                 status_update TEXT
             )
         """)
+        self._db.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        self._migrate()
+        self._ensure_indexes()
         self._db.commit()
+
+    def _migrate(self):
+        row = self._db.execute(
+            "SELECT MAX(version) FROM schema_version"
+        ).fetchone()
+        current = row[0] or 0
+
+        if current < 1:
+            self._db.execute(
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (1,)
+            )
+            current = 1
+
+        if current < 2:
+            self._ensure_indexes()
+            self._db.execute(
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (2,)
+            )
+
+    def _ensure_indexes(self):
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_event_stream ON memories(event_stream_id)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_ts_stream ON memories(timestamp, event_stream_id)"
+        )
 
     def add(self, mem: Memory):
         emb = embed_texts([mem.content])[0]

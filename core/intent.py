@@ -55,7 +55,12 @@ def classify(text: str) -> str:
     # 兜底规则
     for kw in ["怎么", "如何", "怎样"]:
         if kw in text:
-            for v in ["治", "做", "弄", "发生", "修", "打", "学"]:
+            for v in ["治", "做", "弄", "发生", "修", "打", "学", "做到"]:
                 if v in text:
                     return PROCESS
+    # "如何" + 状态词 → STATUS
+    if "如何" in text:
+        for sv in ["恢复", "情况", "状况", "状态", "样子", "伤", "病"]:
+            if sv in text:
+                return STATUS
     return intent
