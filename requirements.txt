@@ -1,3 +1,4 @@
 chromadb
 scikit-learn
 numpy
+jieba
