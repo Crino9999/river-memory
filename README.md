@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-4/4%20passed-brightgreen)](test_demo.py)
 
-**作者**: [容心](https://github.com/Crino9999) | **实现**: 铃兰 & 小九 | **版本**: 0.1.0
+**作者**: [容心](https://github.com/Crino9999) | **实现**: 铃兰 & 小九 | **版本**: 0.3.0
 
 ---
 
@@ -167,12 +167,41 @@ response = recall(
 - [x] PCA 意图路由
 - [x] 纯离线嵌入（TF-IDF）
 - [x] 4场景测试通过
-- [ ] `due_at` / `trigger_at` 到期时间字段
-- [ ] Memory Agent 归流层（LLM驱动的事件流归属判定）
+- [x] `due_at` / `trigger_at` 到期时间字段
+- [x] Memory Agent 归流层（LLM驱动的事件流归属判定）
+- [x] 记忆生命周期管理 (lifecycle: pending/active/resolved/superseded/invalid/dream)
+- [x] 状态投影 current_state() 过滤无效记忆
+- [x] 置信度存储与低置信度审查
+- [x] `recall()` 端到端可注入上下文
 - [ ] 复杂RP场景（误会/梦境/复发/反转/取消承诺）
-- [ ] `recall()` 端到端可注入上下文
-- [ ] AstrBot 插件封装
+- [x] AstrBot 插件封装
 
 ## License
 
 MIT © 容心 (Crino9999)
+
+## 版本历史
+
+### v0.3.0 (2026-05-26)
+- 数据模型升级：新增 lifecycle/confidence/due_at/trigger_at/occurred_at/valid_from/valid_to/source_event_id/supersedes 字段
+- EventStream 新增 current_state() 状态投影，过滤 invalid/dream/superseded 记忆
+- 时间探针：过期加分仅对 pending 未完成承诺生效，已完成的旧记忆不再误召回
+- 置信度存入 Memory，低置信度 (<0.5) 触发 warning 日志
+- test_demo.py 端到端走完整 recall() 流程
+- recall() 返回结构化 dict (response/intent/hits/memory_context)
+- SQLite v3 migration 兼容旧数据库
+
+### v0.2.0 (2026-05-26)
+- MemoryIngestor 记忆自动入库（LLM 物理坐标提取 + 事件流归属判定）
+- ConversationManager 多用户会话管理
+- time_parser 时间表达式解析
+- CONFIG 配置外部化 (.env)
+- sentence-transformers 真实 embedding (可降级 TF-IDF)
+- AstrBot 插件适配器
+
+### v0.1.0
+- 物理坐标关联索引（时间+对象+环境四路探针）
+- 事件流 & 认知/回忆/混合三视图
+- PCA 意图路由
+- TF-IDF 纯离线嵌入
+- 4 场景测试通过
