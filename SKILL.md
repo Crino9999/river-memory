@@ -160,7 +160,7 @@ reply = manager.recall_for_session("user_001", "恢复得怎么样了？")
 
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
-| API_BASE | opencode.ai/zen/go/v1 | LLM API地址 |
+| API_BASE | http://127.0.0.1:18789/v1 | LLM API地址 |
 | API_KEY | - | API密钥 |
 | MODEL | deepseek-v4-flash | LLM模型名 |
 | EMBED_MODEL | paraphrase-multilingual-MiniLM-L12-v2 | embedding模型 |

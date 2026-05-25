@@ -165,56 +165,13 @@ response = recall(
 - [x] 物理坐标关联索引（时间+对象+环境）
 - [x] 事件流 & 认知/回忆/混合三视图
 - [x] PCA 意图路由
-- [x] 纯离线嵌入（TF-IDF + jieba分词）
+- [x] 纯离线嵌入（TF-IDF）
 - [x] 4场景测试通过
-- [x] LLM 物理坐标提取 (core/ingestor.py)
-- [x] 事件流归属判定 (core/ingestor.py)
-- [x] MemoryIngestor 入库流程
-- [x] ConversationManager 会话管理 (core/conversation.py)
-- [x] 时间表达式解析 (core/time_parser.py)
-- [x] AstrBot 插件适配器 (astrbot_plugin/)
-- [x] 配置外部化 (.env + python-dotenv)
-- [x] 结构化日志 (core/logger.py)
-- [x] 角色系统指令管理 (config/characters/)
 - [ ] `due_at` / `trigger_at` 到期时间字段
+- [ ] Memory Agent 归流层（LLM驱动的事件流归属判定）
 - [ ] 复杂RP场景（误会/梦境/复发/反转/取消承诺）
-- [ ] 真实 Embedding 模型替换 TF-IDF
-- [ ] 集成端到端测试覆盖所有设计文档场景
-- [ ] 压力测试 & 边界测试
-
-## 版本历史
-
-### v0.2.0 (2026-05-26) — opencode 实现 MVP 核心模块
-
-**新增模块**：
-- `core/ingestor.py` — LLM 物理坐标提取 + 事件流归属判定 + MemoryIngestor（Phase 2 核心）
-- `core/conversation.py` — ConversationManager 多会话/多用户管理
-- `core/time_parser.py` — 中文时间表达式解析（"明天"→日期、"下周"→日期+7）
-- `core/logger.py` — 结构化日志，按级别输出
-- `astrbot_plugin/` — AstrBot 标准插件适配器
-- `scripts/import_history.py` — 从 JSON/CSV 批量导入历史对话
-- `config/characters/rem.json` — 蕾姆角色配置模板
-- `demo.py` — 端到端演示（Ingestor + recall）
-- `.env.example` — 配置模板（API地址、模型、探针权重、日志级别）
-
-**更新模块**：
-- `config.py` — 集成 python-dotenv、探针权重可配置、日志配置
-- `main.py` — 集成 Ingestor + ConversationManager
-- `associative.py` — 日期模糊匹配、对象别名匹配
-- `intent.py` — 多角色意图识别
-- `SKILL.md` — 更新架构图和 API 文档
-- `requirements.txt` — 添加 jieba、python-dotenv 等依赖
-
-**修复**：
-- TF-IDF 固定坐标系（预 fit 种子语料，只 transform 不 refit）
-- jieba 中文分词（解决中文被当成单字符大 token 的问题）
-- HitResult 来源追踪（替代奇偶推断判断语义命中）
-
-### v0.1.0 (2026-05-25) — 铃兰手搓 PoC
-
-- 双索引体系原型实现（关联索引 + 事件流三视图）
-- 4 场景测试全部通过
-- TF-IDF + Chroma + SQLite 纯离线存储
+- [ ] `recall()` 端到端可注入上下文
+- [ ] AstrBot 插件封装
 
 ## License
 

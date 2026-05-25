@@ -277,11 +277,16 @@ class MemoryIngestor:
             objects=objects,
             environment=environment,
             status_update=status_update,
+            confidence=confidence,
+            lifecycle="active",
         )
+
+        if confidence < 0.5:
+            log.warning("ingest: low confidence %.2f for '%s', consider review", confidence, content[:60])
 
         try:
             self._store.add(mem)
-            log.info("ingest: stored memory %s to stream %s", mem.memory_id, stream_id)
+            log.info("ingest: stored memory %s to stream %s (conf=%.2f)", mem.memory_id, stream_id, confidence)
         except Exception as e:
             log.error("ingest: store error for %s: %s", mem.memory_id, e)
             return []

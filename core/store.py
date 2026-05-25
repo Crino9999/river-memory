@@ -8,7 +8,7 @@ import jieba
 from config import CHROMA_DIR, DB_PATH, USE_REAL_EMBED
 from core.memory import Memory
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 def _tokenize(text: str) -> str:
     """中文分词，空格分隔"""
@@ -60,6 +60,29 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
         results.append(vec[:128])
     return results
 
+def _row_to_memory(row) -> Memory:
+    """Row → Memory 对象，兼容旧表（缺少新字段时用默认值）"""
+    cols = row.keys()
+    return Memory(
+        memory_id=row["memory_id"],
+        content=row["content"],
+        timestamp=row["timestamp"],
+        event_stream_id=row["event_stream_id"] or "",
+        objects=json.loads(row["objects"] or "[]"),
+        environment=row["environment"] or "",
+        status_update=row["status_update"],
+        occurred_at=row["occurred_at"] if "occurred_at" in cols else "",
+        due_at=row["due_at"] if "due_at" in cols else None,
+        trigger_at=row["trigger_at"] if "trigger_at" in cols else None,
+        valid_from=row["valid_from"] if "valid_from" in cols else "",
+        valid_to=row["valid_to"] if "valid_to" in cols else None,
+        lifecycle=row["lifecycle"] if "lifecycle" in cols else "active",
+        confidence=row["confidence"] if "confidence" in cols else 1.0,
+        source_event_id=row["source_event_id"] if "source_event_id" in cols else None,
+        supersedes=row["supersedes"] if "supersedes" in cols else None,
+    )
+
+
 class MemoryStore:
     def __init__(self):
         os.makedirs(CHROMA_DIR, exist_ok=True)
@@ -80,7 +103,16 @@ class MemoryStore:
                 event_stream_id TEXT,
                 objects TEXT,
                 environment TEXT,
-                status_update TEXT
+                status_update TEXT,
+                occurred_at TEXT DEFAULT '',
+                due_at TEXT,
+                trigger_at TEXT,
+                valid_from TEXT DEFAULT '',
+                valid_to TEXT,
+                lifecycle TEXT DEFAULT 'active',
+                confidence REAL DEFAULT 1.0,
+                source_event_id TEXT,
+                supersedes TEXT
             )
         """)
         self._db.execute("""
@@ -111,6 +143,28 @@ class MemoryStore:
                 "INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (2,)
             )
 
+        if current < 3:
+            # v3: 新增生命周期和溯源字段
+            new_cols = [
+                "ALTER TABLE memories ADD COLUMN occurred_at TEXT DEFAULT ''",
+                "ALTER TABLE memories ADD COLUMN due_at TEXT",
+                "ALTER TABLE memories ADD COLUMN trigger_at TEXT",
+                "ALTER TABLE memories ADD COLUMN valid_from TEXT DEFAULT ''",
+                "ALTER TABLE memories ADD COLUMN valid_to TEXT",
+                "ALTER TABLE memories ADD COLUMN lifecycle TEXT DEFAULT 'active'",
+                "ALTER TABLE memories ADD COLUMN confidence REAL DEFAULT 1.0",
+                "ALTER TABLE memories ADD COLUMN source_event_id TEXT",
+                "ALTER TABLE memories ADD COLUMN supersedes TEXT",
+            ]
+            for sql in new_cols:
+                try:
+                    self._db.execute(sql)
+                except sqlite3.OperationalError:
+                    pass  # 列已存在
+            self._db.execute(
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (3,)
+            )
+
     def _ensure_indexes(self):
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp)"
@@ -133,9 +187,16 @@ class MemoryStore:
         )
 
         self._db.execute(
-            """INSERT OR REPLACE INTO memories VALUES (?,?,?,?,?,?,?)""",
+            """INSERT OR REPLACE INTO memories
+               (memory_id, content, timestamp, event_stream_id, objects,
+                environment, status_update, occurred_at, due_at, trigger_at,
+                valid_from, valid_to, lifecycle, confidence, source_event_id, supersedes)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (mem.memory_id, mem.content, mem.timestamp, mem.event_stream_id,
-             json.dumps(mem.objects), mem.environment, mem.status_update),
+             json.dumps(mem.objects), mem.environment, mem.status_update,
+             mem.occurred_at or "", mem.due_at, mem.trigger_at,
+             mem.valid_from or "", mem.valid_to, mem.lifecycle or "active",
+             mem.confidence, mem.source_event_id, mem.supersedes),
         )
         self._db.commit()
 
@@ -155,30 +216,18 @@ class MemoryStore:
         ).fetchone()
         if not row:
             return None
-        return Memory(
-            memory_id=row[0], content=row[1], timestamp=row[2],
-            event_stream_id=row[3], objects=json.loads(row[4] or "[]"),
-            environment=row[5] or "", status_update=row[6],
-        )
+        return _row_to_memory(row)
 
     def list_all(self) -> List[Memory]:
         rows = self._db.execute("SELECT * FROM memories").fetchall()
-        return [Memory(
-            memory_id=r[0], content=r[1], timestamp=r[2],
-            event_stream_id=r[3], objects=json.loads(r[4] or "[]"),
-            environment=r[5] or "", status_update=r[6],
-        ) for r in rows]
+        return [_row_to_memory(r) for r in rows]
 
     def get_by_stream(self, event_stream_id: str) -> List[Memory]:
         rows = self._db.execute(
             "SELECT * FROM memories WHERE event_stream_id=? ORDER BY timestamp",
             (event_stream_id,),
         ).fetchall()
-        return [Memory(
-            memory_id=r[0], content=r[1], timestamp=r[2],
-            event_stream_id=r[3], objects=json.loads(r[4] or "[]"),
-            environment=r[5] or "", status_update=r[6],
-        ) for r in rows]
+        return [_row_to_memory(r) for r in rows]
 
     def clear(self):
         self._db.execute("DELETE FROM memories")

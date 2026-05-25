@@ -42,13 +42,15 @@ def recall(
     current_env: str,
     store: MemoryStore,
     character_name: str = "角色",
-) -> str:
+) -> dict:
     """
     完整检索流程：
     1. 意图路由 → 确定STATUS/PROCESS/CHAT
     2. 关联索引 → 多路探针找记忆
     3. 事件流索引 → 按意图选视图
     4. LLM生成回复
+
+    返回 dict: {response, intent, hits, memory_context}
     """
     log.info("recall input='%s' date=%s people=%s env=%s", user_input[:50], current_date, present_people, current_env)
 
@@ -59,7 +61,12 @@ def recall(
     if not hits:
         prompt = f"你是{character_name}。用户说：「{user_input}」。自然地回复。"
         log.info("recall: no hits, direct chat")
-        return llm(prompt)
+        return {
+            "response": llm(prompt),
+            "intent": intent,
+            "hits": [],
+            "memory_context": [],
+        }
 
     streams = {}
     semantic_ids = set()
@@ -99,4 +106,9 @@ def recall(
         f"当前情况: 用户「{user_input}」\n"
         f"请自然地回复，融入记忆中的信息。\n"
     )
-    return llm(prompt)
+    return {
+        "response": llm(prompt),
+        "intent": intent,
+        "hits": hits,
+        "memory_context": final,
+    }

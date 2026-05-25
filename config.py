@@ -37,7 +37,7 @@ def _env_bool(key: str, default: bool) -> bool:
     return val in ("true", "1", "yes", "on")
 
 # LLM API 配置
-API_BASE = _env("API_BASE", "https://opencode.ai/zen/go/v1")
+API_BASE = _env("API_BASE", "http://127.0.0.1:18789/v1")
 API_KEY = _env("API_KEY", "")
 MODEL = _env("MODEL", "deepseek-v4-flash")
 

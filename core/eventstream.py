@@ -1,6 +1,6 @@
 """模块C：事件流索引 - 认知视图 / 回忆视图 / 混合视图"""
 from typing import List
-from core.memory import Memory, EventStream
+from core.memory import Memory, EventStream, INVALID, DREAM, SUPERSEDED
 from core.intent import STATUS, PROCESS, CHAT
 
 def query_stream(
@@ -10,22 +10,23 @@ def query_stream(
 ) -> List[Memory]:
     """
     根据意图返回事件流的不同视图
-    - STATUS: 认知视图（只取最新）
+    - STATUS: 认知视图（跳过无效/梦境/废弃，取最新有效状态）
     - PROCESS: 回忆视图（全部）
-    - CHAT: 混合视图（语义命中节点+最新背景）
+    - CHAT: 混合视图（语义命中节点+最新有效状态背景）
     """
     if not stream.memories:
         return []
 
     if intent == STATUS:
-        return [stream.latest()]
+        state = stream.current_state()
+        return [state] if state else []
 
     if intent == PROCESS:
         return stream.all_versions()
 
     if intent == CHAT:
         result = []
-        latest = stream.latest()
+        state = stream.current_state()
         seen = set()
 
         # 语义命中的过程节点保留
@@ -35,10 +36,11 @@ def query_stream(
                     result.append(mem)
                     seen.add(mem.memory_id)
 
-        # 最新状态作为背景
-        if latest.memory_id not in seen:
-            result.append(latest)
+        # 最新有效状态作为背景
+        if state and state.memory_id not in seen:
+            result.append(state)
 
         return result
 
-    return [stream.latest()]
+    state = stream.current_state()
+    return [state] if state else []

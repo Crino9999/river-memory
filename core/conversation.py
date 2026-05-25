@@ -103,7 +103,7 @@ class ConversationManager:
         """
         from main import recall
         session = self.get_session(session_id)
-        return recall(
+        result = recall(
             user_input=user_input,
             current_date=session.current_date,
             present_people=session.present_people,
@@ -111,6 +111,7 @@ class ConversationManager:
             store=self._store,
             character_name=session.character_name,
         )
+        return result["response"] if isinstance(result, dict) else result
 
     def force_ingest_recent_history(self, session_id: str, turns: int = None):
         """强制将最近N轮历史入库（用于手动触发或会话结束）"""

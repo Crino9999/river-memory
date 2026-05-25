@@ -109,7 +109,7 @@ def is_overdue(timestamp: str, current_date: str) -> bool:
         return False
 
 
-def date_score(timestamp: str, current_date: str) -> int:
+def date_score(timestamp: str, current_date: str, lifecycle: str = None) -> int:
     """
     日期距离计分（替代简单布尔判断）
     - 精确同日: 10
@@ -117,7 +117,8 @@ def date_score(timestamp: str, current_date: str) -> int:
     - 7天内: 5
     - 30天内: 3
     - 同一年: 2
-    - 已过期（未完成的承诺）: +3 bonus
+    - 已过期且未完成的承诺 (lifecycle=pending): +3 bonus
+    - 已过期但已完成的 (lifecycle=resolved): 不加分（避免旧记忆持续冒出来）
     """
     dist = date_distance(timestamp, current_date)
     if dist == 0:
@@ -133,7 +134,8 @@ def date_score(timestamp: str, current_date: str) -> int:
     else:
         score = 1
 
-    if is_overdue(timestamp, current_date):
+    # 只有未完成的承诺才给过期加分
+    if lifecycle == "pending" and is_overdue(timestamp, current_date):
         score += 3
 
     return score

@@ -40,9 +40,9 @@ def search(
     for mem, _ in semantic_results:
         _add(mem.memory_id, PROBE_WEIGHTS["semantic"], "semantic")
 
-    # 探针2: 时间（距离计分替代简单布尔）
+    # 探针2: 时间（距离计分，仅未完成承诺享过期加分）
     for mem in all_memories:
-        ds = date_score(mem.timestamp, current_date)
+        ds = date_score(mem.timestamp, current_date, lifecycle=mem.lifecycle)
         if ds > 0:
             _add(mem.memory_id, PROBE_WEIGHTS["time"] * ds // 3, "time")
 
