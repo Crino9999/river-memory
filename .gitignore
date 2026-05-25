@@ -1,0 +1,5 @@
+__pycache__/
+chroma_data/
+river.db
+*.pyc
+.DS_Store
