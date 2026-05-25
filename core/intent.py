@@ -52,15 +52,16 @@ def classify(text: str) -> str:
     dist = {k: np.linalg.norm(point - c) for k, c in _centers.items()}
     intent = min(dist, key=dist.get)
 
-    # 兜底规则
+    # 兜底规则: "怎么/如何/怎样" + 动作词 → PROCESS
     for kw in ["怎么", "如何", "怎样"]:
         if kw in text:
-            for v in ["治", "做", "弄", "发生", "修", "打", "学", "做到"]:
+            for v in ["治", "做", "弄", "发生", "修", "打", "学", "做到", "解决", "过来"]:
                 if v in text:
                     return PROCESS
-    # "如何" + 状态词 → STATUS
-    if "如何" in text:
-        for sv in ["恢复", "情况", "状况", "状态", "样子", "伤", "病"]:
-            if sv in text:
-                return STATUS
+    # "怎么/如何/怎样" + 状态词 → STATUS（不是问过程，是问现状）
+    for kw in ["怎么", "如何", "怎样"]:
+        if kw in text:
+            for sv in ["恢复", "情况", "状况", "状态", "样子", "伤", "病", "好", "行", "能", "可以"]:
+                if sv in text:
+                    return STATUS
     return intent

@@ -282,7 +282,11 @@ class MemoryIngestor:
         )
 
         if confidence < 0.5:
-            log.warning("ingest: low confidence %.2f for '%s', consider review", confidence, content[:60])
+            log.warning("ingest: low confidence %.2f for '%s', queued for review", confidence, content[:60])
+            try:
+                self._store.add_review(mem.memory_id, content, confidence, "low confidence stream affiliation")
+            except Exception as e:
+                log.error("Failed to add review item: %s", e)
 
         try:
             self._store.add(mem)
@@ -292,6 +296,56 @@ class MemoryIngestor:
             return []
 
         return [mem]
+
+    def resolve_stream(self, event_stream_id: str, resolution: str = "resolved",
+                       status_update: str = None):
+        """
+        标记一个事件流为已完成：
+        - lifecycle → resolved
+        - 可选：追加一条 status_update
+        """
+        from core.memory import RESOLVED, SUPERSEDED
+        state = RESOLVED if resolution == "resolved" else SUPERSEDED
+        self._store.set_stream_lifecycle(event_stream_id, state)
+        if status_update:
+            mem = Memory(
+                memory_id=self._next_id(),
+                content=f"[系统] 事件流 {event_stream_id} 已{resolution}: {status_update}",
+                timestamp=datetime.now().strftime("%Y-%m-%d"),
+                event_stream_id=event_stream_id,
+                status_update=status_update,
+                lifecycle=state,
+            )
+            self._store.add(mem)
+        log.info("resolve_stream: %s → %s", event_stream_id, state)
+
+    def cancel_promise(self, memory_id: str, reason: str = ""):
+        """
+        取消一个未完成的承诺：
+        - 将该记忆所在整个事件流的 lifecycle → invalid
+        """
+        from core.memory import INVALID
+        mem = self._store.get_by_id(memory_id)
+        if mem:
+            if reason and mem.event_stream_id:
+                self._store.set_stream_lifecycle(mem.event_stream_id, INVALID)
+            self._store.set_lifecycle(memory_id, INVALID)
+            log.info("cancel_promise: %s → invalid (%s)", memory_id, reason)
+
+    def mark_as_dream(self, memory_id: str):
+        """标记一条记忆为梦境（非真实发生）"""
+        from core.memory import DREAM
+        self._store.set_lifecycle(memory_id, DREAM)
+        log.info("mark_as_dream: %s", memory_id)
+
+    def merge_to_stream(self, memory_id: str, target_stream_id: str):
+        """将一条记忆重新归入另一个事件流（误归流修正）"""
+        mem = self._store.get_by_id(memory_id)
+        if mem:
+            old_stream = mem.event_stream_id
+            mem.event_stream_id = target_stream_id
+            self._store.add(mem)
+            log.info("merge_to_stream: %s moved from %s → %s", memory_id, old_stream, target_stream_id)
 
 
 def create_ingestor(store: MemoryStore) -> MemoryIngestor:

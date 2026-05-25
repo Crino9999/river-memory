@@ -121,6 +121,18 @@ class MemoryStore:
                 applied_at TEXT DEFAULT (datetime('now'))
             )
         """)
+        self._db.execute("""
+            CREATE TABLE IF NOT EXISTS review_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id TEXT NOT NULL,
+                content TEXT,
+                confidence REAL,
+                reason TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending',
+                created_at TEXT DEFAULT (datetime('now')),
+                reviewed_at TEXT
+            )
+        """)
         self._migrate()
         self._ensure_indexes()
         self._db.commit()
@@ -231,9 +243,101 @@ class MemoryStore:
 
     def clear(self):
         self._db.execute("DELETE FROM memories")
+        self._db.execute("DELETE FROM review_queue")
         self._db.commit()
         try:
             self._chroma.delete_collection("river_memories")
             self._collection = self._chroma.create_collection("river_memories")
         except Exception:
             pass
+
+    # ======== 审查队列 ========
+
+    def add_review(self, memory_id: str, content: str = "", confidence: float = 0.0, reason: str = ""):
+        """低置信度记忆放入审查队列"""
+        self._db.execute(
+            """INSERT INTO review_queue (memory_id, content, confidence, reason)
+               VALUES (?,?,?,?)""",
+            (memory_id, content[:200], confidence, reason),
+        )
+        self._db.commit()
+
+    def get_pending_reviews(self) -> list:
+        """获取待审查的记忆列表"""
+        rows = self._db.execute(
+            "SELECT * FROM review_queue WHERE status='pending' ORDER BY created_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def resolve_review(self, review_id: int, action: str):
+        """
+        处理审查: approve / reject / merge
+        - approve: 不做额外操作（记忆已入库，只是确认）
+        - reject: 删除对应记忆
+        - merge: 手动指定归入的 stream_id (需额外调用)
+        """
+        self._db.execute(
+            "UPDATE review_queue SET status=?, reviewed_at=datetime('now') WHERE id=?",
+            (action, review_id),
+        )
+        if action == "reject":
+            row = self._db.execute(
+                "SELECT memory_id FROM review_queue WHERE id=?", (review_id,)
+            ).fetchone()
+            if row:
+                self._db.execute("DELETE FROM memories WHERE memory_id=?", (row["memory_id"],))
+                try:
+                    self._collection.delete(ids=[row["memory_id"]])
+                except Exception:
+                    pass
+        self._db.commit()
+
+    # ======== 生命周期管理 ========
+
+    def set_lifecycle(self, memory_id: str, new_state: str):
+        """更新单条记忆的生命周期"""
+        self._db.execute(
+            "UPDATE memories SET lifecycle=? WHERE memory_id=?", (new_state, memory_id)
+        )
+        self._db.commit()
+
+    def set_stream_lifecycle(self, event_stream_id: str, new_state: str):
+        """批量更新整个事件流的生命周期"""
+        self._db.execute(
+            "UPDATE memories SET lifecycle=? WHERE event_stream_id=?",
+            (new_state, event_stream_id),
+        )
+        self._db.commit()
+
+    def superseed(self, old_memory_id: str, new_memory_id: str):
+        """用新记忆替代旧记忆：旧记忆标为 superseded，新记忆设置 supersedes 字段"""
+        self._db.execute(
+            "UPDATE memories SET lifecycle='superseded' WHERE memory_id=?",
+            (old_memory_id,),
+        )
+        self._db.execute(
+            "UPDATE memories SET supersedes=? WHERE memory_id=?",
+            (old_memory_id, new_memory_id),
+        )
+        self._db.commit()
+
+    def get_by_lifecycle(self, state: str) -> list:
+        """按生命周期状态查询"""
+        rows = self._db.execute(
+            "SELECT * FROM memories WHERE lifecycle=? ORDER BY timestamp",
+            (state,),
+        ).fetchall()
+        return [_row_to_memory(r) for r in rows]
+
+    def get_pending_promises(self, current_date: str = None) -> list:
+        """获取所有未完成且已过期的承诺"""
+        from datetime import datetime
+        all_pending = self.get_by_lifecycle("pending")
+        if current_date:
+            try:
+                today = datetime.strptime(current_date, "%Y-%m-%d")
+                return [m for m in all_pending
+                        if m.due_at and datetime.strptime(m.due_at, "%Y-%m-%d") <= today]
+            except (ValueError, TypeError):
+                pass
+        return all_pending
