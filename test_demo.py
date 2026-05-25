@@ -1,7 +1,7 @@
 """测试三个模拟场景"""
 from core.memory import Memory, EventStream
 from core.intent import classify, STATUS, PROCESS, CHAT
-from core.associative import associative_search
+from core.associative import associative_search, HitResult
 from core.eventstream import query_stream
 from core.store import MemoryStore
 
@@ -38,8 +38,8 @@ def test_scene1_debt(store):
     print(f"输入: {user}")
     print(f"意图: {intent}")
     hits = associative_search(user, "2026-01-20", ["A"], "客厅", store)
-    print(f"命中记忆: {[(m.memory_id, s) for m, s in hits]}")
-    assert hits[0][0].memory_id == "m001", "应该优先命中欠钱记忆!"
+    print(f"命中记忆: {[(h.memory.memory_id, h.score, list(h.sources)) for h in hits]}")
+    assert hits[0].memory.memory_id == "m001", "应该优先命中欠钱记忆!"
     print("PASS: A会提醒你还钱")
 
 def test_scene2_status(store):

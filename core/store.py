@@ -1,27 +1,33 @@
-"""存储层：Chroma + SQLite（纯离线：固定TF-IDF坐标系）"""
+"""存储层：Chroma + SQLite（纯离线：jieba分词 + 固定TF-IDF坐标系）"""
 import sqlite3, json, chromadb, os
 from typing import List, Tuple, Optional
 from chromadb.config import Settings
 from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy as np
+import jieba
 from config import CHROMA_DIR, DB_PATH
 from core.memory import Memory
 
-# 种子语料库 — 确保TF-IDF词表一致（必须先fit再transform，绝对不能每次fit）
+def _tokenize(text: str) -> str:
+    """中文分词，空格分隔"""
+    return " ".join(jieba.cut(text))
+
+# 种子语料 —— 确保TF-IDF词表一致
 _SEED_CORPUS = [
-    "欠钱还钱承诺债务借条还款到期",
-    "治好治愈治疗恢复健康受伤伤口",
-    "今天天气不错心情好累疲惫开心",
-    "聊天吃饭睡觉日常闲聊问候你好",
-    "战斗攻击防御技能魔法冒险地下城",
+    _tokenize("欠钱还钱承诺债务借条还款到期"),
+    _tokenize("治好治愈治疗恢复健康受伤伤口"),
+    _tokenize("今天天气不错心情好累疲惫开心"),
+    _tokenize("聊天吃饭睡觉日常闲聊问候你好"),
+    _tokenize("战斗攻击防御技能魔法冒险地下城"),
 ]
 _vec = TfidfVectorizer(max_features=128)
 _vec.fit(_SEED_CORPUS)
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-    """纯本地嵌入：TF-IDF → transform（不re-fit），填充到128维"""
+    """纯本地嵌入：jieba分词 → TF-IDF transform → 128维"""
     global _vec
-    tfidf = _vec.transform(texts).toarray()
+    tokenized = [_tokenize(t) for t in texts]
+    tfidf = _vec.transform(tokenized).toarray()
     results = []
     for row in tfidf:
         vec = list(row.astype(float))

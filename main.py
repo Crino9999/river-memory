@@ -44,15 +44,15 @@ def recall(
     if not hits:
         return llm(f"你是{character_name}。用户说：「{user_input}」。自然地回复。")
 
-    # 按事件流分组（语义命中 = 得分中包含了语义探针+1的命中）
+    # 按事件流分组（用 sources 字段判断语义命中）
     streams = {}
     semantic_ids = set()
-    for mem, score in hits:
+    for hit in hits:
+        mem = hit.memory
         if mem.event_stream_id not in streams:
             stream_mems = store.get_by_stream(mem.event_stream_id)
             streams[mem.event_stream_id] = EventStream(mem.event_stream_id, stream_mems)
-        # 语义命中判断：得分包含语义分（奇数分含语义+1）
-        if score % 2 == 1 or score == 1:
+        if "semantic" in hit.sources:
             semantic_ids.add(mem.memory_id)
 
     # 事件流索引 → 视图选择
