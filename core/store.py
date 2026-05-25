@@ -1,5 +1,5 @@
-"""存储层：Chroma + SQLite（纯离线：TF-IDF + 随机投影，不走网络）"""
-import sqlite3, json, chromadb, os, hashlib
+"""存储层：Chroma + SQLite（纯离线：固定TF-IDF坐标系）"""
+import sqlite3, json, chromadb, os
 from typing import List, Tuple, Optional
 from chromadb.config import Settings
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -7,25 +7,25 @@ import numpy as np
 from config import CHROMA_DIR, DB_PATH
 from core.memory import Memory
 
-# 简化的文本嵌入：TF-IDF → 128维（纯本地，零网络依赖）
+# 种子语料库 — 确保TF-IDF词表一致（必须先fit再transform，绝对不能每次fit）
+_SEED_CORPUS = [
+    "欠钱还钱承诺债务借条还款到期",
+    "治好治愈治疗恢复健康受伤伤口",
+    "今天天气不错心情好累疲惫开心",
+    "聊天吃饭睡觉日常闲聊问候你好",
+    "战斗攻击防御技能魔法冒险地下城",
+]
 _vec = TfidfVectorizer(max_features=128)
-
-def _hash_to_seed(text: str) -> int:
-    return int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
+_vec.fit(_SEED_CORPUS)
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-    """纯本地嵌入：TF-IDF + 随机投影填充到128维"""
+    """纯本地嵌入：TF-IDF → transform（不re-fit），填充到128维"""
     global _vec
-    try:
-        tfidf = _vec.fit_transform(texts).toarray()
-    except ValueError:
-        _vec = TfidfVectorizer(max_features=128)
-        tfidf = _vec.fit_transform(texts).toarray()
-    # 填充到128维
+    tfidf = _vec.transform(texts).toarray()
     results = []
     for row in tfidf:
         vec = list(row.astype(float))
-        np.random.seed(_hash_to_seed(texts[0] if len(vec) < 2 else str(vec[:10])))
+        np.random.seed(int(sum(abs(v) for v in vec) * 1e6) % 2**31)
         while len(vec) < 128:
             vec.append(float(np.random.randn() * 0.01))
         results.append(vec[:128])

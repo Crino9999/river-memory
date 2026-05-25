@@ -1,0 +1,3 @@
+chromadb
+scikit-learn
+numpy

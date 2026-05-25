@@ -1,4 +1,4 @@
-"""模块A：意图路由 - STATUS / PROCESS / CHAT"""
+"""模块A：意图路由 - 使用固定TF-IDF坐标系"""
 import numpy as np
 from sklearn.decomposition import PCA
 from core.store import embed_texts
@@ -34,8 +34,7 @@ def _ensure_loaded():
     global _pca, _centers
     if _pca is None:
         all_samples = _SAMPLES[STATUS] + _SAMPLES[PROCESS] + _SAMPLES[CHAT]
-        embs = embed_texts(all_samples)
-        embs = np.array(embs)
+        embs = np.array(embed_texts(all_samples))
         _pca = PCA(n_components=3).fit(embs)
         reduced = _pca.transform(embs)
         n = len(_SAMPLES[STATUS])
