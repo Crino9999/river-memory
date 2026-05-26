@@ -1,4 +1,4 @@
-# 河 (The River) — AstrBot RP 记忆系统
+# HIMF — Hybrid Indexing Memory Framework（河）
 
 > **记忆即状态，索引即认知。没有外部状态表。**
 
