@@ -8,7 +8,7 @@ import jieba
 from config import CHROMA_DIR, DB_PATH, USE_REAL_EMBED
 from core.memory import Memory
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 def _tokenize(text: str) -> str:
     """中文分词，空格分隔"""
@@ -60,6 +60,16 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
         results.append(vec[:128])
     return results
 
+def _safe_json(val):
+    """安全 JSON 解析，失败返回 None"""
+    if not val:
+        return None
+    try:
+        return json.loads(val)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def _row_to_memory(row) -> Memory:
     """Row → Memory 对象，兼容旧表（缺少新字段时用默认值）"""
     cols = row.keys()
@@ -68,7 +78,7 @@ def _row_to_memory(row) -> Memory:
         content=row["content"],
         timestamp=row["timestamp"],
         event_stream_id=row["event_stream_id"] or "",
-        objects=json.loads(row["objects"] or "[]"),
+        objects=_safe_json(row["objects"]) or [],
         environment=row["environment"] or "",
         status_update=row["status_update"],
         occurred_at=row["occurred_at"] if "occurred_at" in cols else "",
@@ -80,6 +90,20 @@ def _row_to_memory(row) -> Memory:
         confidence=row["confidence"] if "confidence" in cols else 1.0,
         source_event_id=row["source_event_id"] if "source_event_id" in cols else None,
         supersedes=row["supersedes"] if "supersedes" in cols else None,
+        # v4 新字段
+        salience=row["salience"] if "salience" in cols else 5,
+        volatility=row["volatility"] if "volatility" in cols else "medium",
+        stability=row["stability"] if "stability" in cols else 2.3,
+        difficulty=row["difficulty"] if "difficulty" in cols else 5.0,
+        last_accessed=row["last_accessed"] if "last_accessed" in cols else "",
+        access_count=row["access_count"] if "access_count" in cols else 0,
+        version=row["version"] if "version" in cols else 0,
+        provenance_round_hash=row["provenance_round_hash"] if "provenance_round_hash" in cols else "",
+        provenance_context=row["provenance_context"] if "provenance_context" in cols else "",
+        reinterpretation=row["reinterpretation"] if "reinterpretation" in cols else None,
+        correction_history=_safe_json(row["correction_history"]) if ("correction_history" in cols and row["correction_history"]) else None,
+        related_streams=_safe_json(row["related_streams"]) if "related_streams" in cols else [],
+        link_strength=_safe_json(row["link_strength"]) if "link_strength" in cols else [],
     )
 
 
@@ -112,7 +136,20 @@ class MemoryStore:
                 lifecycle TEXT DEFAULT 'active',
                 confidence REAL DEFAULT 1.0,
                 source_event_id TEXT,
-                supersedes TEXT
+                supersedes TEXT,
+                salience INTEGER DEFAULT 5,
+                volatility TEXT DEFAULT 'medium',
+                stability REAL DEFAULT 2.3,
+                difficulty REAL DEFAULT 5.0,
+                last_accessed TEXT DEFAULT '',
+                access_count INTEGER DEFAULT 0,
+                version INTEGER DEFAULT 0,
+                provenance_round_hash TEXT DEFAULT '',
+                provenance_context TEXT DEFAULT '',
+                reinterpretation TEXT,
+                correction_history TEXT,
+                related_streams TEXT DEFAULT '[]',
+                link_strength TEXT DEFAULT '[]'
             )
         """)
         self._db.execute("""
@@ -177,6 +214,32 @@ class MemoryStore:
                 "INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (3,)
             )
 
+        if current < 4:
+            # v4: 新增 v3 salience/FSRS/溯源/再巩固 字段
+            v4_cols = [
+                "ALTER TABLE memories ADD COLUMN salience INTEGER DEFAULT 5",
+                "ALTER TABLE memories ADD COLUMN volatility TEXT DEFAULT 'medium'",
+                "ALTER TABLE memories ADD COLUMN stability REAL DEFAULT 2.3",
+                "ALTER TABLE memories ADD COLUMN difficulty REAL DEFAULT 5.0",
+                "ALTER TABLE memories ADD COLUMN last_accessed TEXT DEFAULT ''",
+                "ALTER TABLE memories ADD COLUMN access_count INTEGER DEFAULT 0",
+                "ALTER TABLE memories ADD COLUMN version INTEGER DEFAULT 0",
+                "ALTER TABLE memories ADD COLUMN provenance_round_hash TEXT DEFAULT ''",
+                "ALTER TABLE memories ADD COLUMN provenance_context TEXT DEFAULT ''",
+                "ALTER TABLE memories ADD COLUMN reinterpretation TEXT",
+                "ALTER TABLE memories ADD COLUMN correction_history TEXT",
+                "ALTER TABLE memories ADD COLUMN related_streams TEXT DEFAULT '[]'",
+                "ALTER TABLE memories ADD COLUMN link_strength TEXT DEFAULT '[]'",
+            ]
+            for sql in v4_cols:
+                try:
+                    self._db.execute(sql)
+                except sqlite3.OperationalError:
+                    pass
+            self._db.execute(
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (4,)
+            )
+
     def _ensure_indexes(self):
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_timestamp ON memories(timestamp)"
@@ -202,13 +265,24 @@ class MemoryStore:
             """INSERT OR REPLACE INTO memories
                (memory_id, content, timestamp, event_stream_id, objects,
                 environment, status_update, occurred_at, due_at, trigger_at,
-                valid_from, valid_to, lifecycle, confidence, source_event_id, supersedes)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                valid_from, valid_to, lifecycle, confidence, source_event_id, supersedes,
+                salience, volatility, stability, difficulty, last_accessed, access_count,
+                version, provenance_round_hash, provenance_context,
+                reinterpretation, correction_history, related_streams, link_strength)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                       ?,?,?,?,?,?,
+                       ?,?,?,
+                       ?,?,?,?)""",
             (mem.memory_id, mem.content, mem.timestamp, mem.event_stream_id,
              json.dumps(mem.objects), mem.environment, mem.status_update,
              mem.occurred_at or "", mem.due_at, mem.trigger_at,
              mem.valid_from or "", mem.valid_to, mem.lifecycle or "active",
-             mem.confidence, mem.source_event_id, mem.supersedes),
+             mem.confidence, mem.source_event_id, mem.supersedes,
+             mem.salience, mem.volatility, mem.stability, mem.difficulty,
+             mem.last_accessed, mem.access_count,
+             mem.version, mem.provenance_round_hash, mem.provenance_context,
+             mem.reinterpretation, json.dumps(mem.correction_history) if mem.correction_history else None,
+             json.dumps(mem.related_streams), json.dumps(mem.link_strength)),
         )
         self._db.commit()
 
@@ -341,3 +415,78 @@ class MemoryStore:
             except (ValueError, TypeError):
                 pass
         return all_pending
+
+    # ======== FSRS 强化更新 ========
+
+    def reinforce_memory(self, memory_id: str, stability: float, last_accessed: str, access_count: int):
+        """检索后更新 FSRS 统计字段（轻量，不重新建向量）"""
+        self._db.execute(
+            """UPDATE memories SET stability=?, last_accessed=?, access_count=?
+               WHERE memory_id=?""",
+            (stability, last_accessed, access_count, memory_id),
+        )
+        self._db.commit()
+
+    # ======== 动态融流 ========
+
+    def merge_orphan_streams(self, min_nodes: int = 3, idle_days: int = 14) -> int:
+        """
+        动态融流：清算孤儿流。
+        三道安检：1.status_update非空→豁免 2.被related_streams引用→豁免 3.salience前30%→豁免
+        返回合并的流数量。
+        """
+        from datetime import datetime, timedelta
+        all_mems = self.list_all()
+        if not all_mems:
+            return 0
+
+        # 收集所有流
+        streams: dict = {}
+        for m in all_mems:
+            if m.event_stream_id:
+                streams.setdefault(m.event_stream_id, []).append(m)
+
+        if not streams:
+            return 0
+
+        # 计算引用关系
+        referenced_streams = set()
+        for m in all_mems:
+            for rsid in (m.related_streams or []):
+                referenced_streams.add(rsid)
+
+        # 计算 salience 阈值（top 30%）
+        stream_saliences = []
+        for sid, mems in streams.items():
+            avg_s = sum(m.salience for m in mems) / len(mems)
+            stream_saliences.append(avg_s)
+        stream_saliences.sort(reverse=True)
+        cutoff_idx = max(0, int(len(stream_saliences) * 0.3) - 1)
+        salience_threshold = stream_saliences[cutoff_idx] if stream_saliences else 10
+
+        merged = 0
+        today = datetime.now()
+
+        for sid, mems in streams.items():
+            if len(mems) >= min_nodes:
+                continue
+            # 安检1: status_update 非空
+            if any(m.status_update for m in mems):
+                continue
+            # 安检2: 被引用
+            if sid in referenced_streams:
+                continue
+            # 安检3: salience 前30%
+            avg_s = sum(m.salience for m in mems) / len(mems)
+            if avg_s >= salience_threshold:
+                continue
+
+            # 通过三道安检 → 并入日常背景流
+            for m in mems:
+                m.event_stream_id = "evt_daily_background"
+                self.add(m)
+            merged += 1
+
+        if merged:
+            self._db.commit()
+        return merged

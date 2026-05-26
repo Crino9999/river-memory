@@ -22,7 +22,7 @@ def query_stream(
         return [state] if state else []
 
     if intent == PROCESS:
-        return stream.all_versions()
+        return stream.peak_end_sample()
 
     if intent == CHAT:
         result = []

@@ -1,10 +1,12 @@
 """River 记忆系统入口"""
 import json, time, requests
+from typing import List, Set
+from collections import deque
 from config import API_BASE, API_KEY, MODEL, LLM_MAX_RETRIES, LLM_RETRY_DELAY, LLM_TIMEOUT, TOP_K
 from core.intent import classify, STATUS, PROCESS, CHAT
-from core.associative import associative_search
+from core.associative import associative_search, HitResult
 from core.eventstream import query_stream
-from core.memory import EventStream
+from core.memory import EventStream, Memory
 from core.store import MemoryStore
 from core.logger import get_logger
 
@@ -34,6 +36,61 @@ def llm(prompt: str, max_tokens: int = 512) -> str:
                 time.sleep(LLM_RETRY_DELAY * (attempt + 1))
     log.error("LLM call failed after %d retries: %s", LLM_MAX_RETRIES, last_err)
     return "[LLM调用失败]"
+
+def _propagate_related(
+    hits: list,
+    store: MemoryStore,
+    top_k: int = 3,
+    max_depth: int = 3,
+    min_activation: float = 0.2,
+) -> List[Memory]:
+    """
+    跨流因果激活传播：从命中记忆出发，沿 related_streams 按 link_strength
+    衰减激活，拉取关联事件流的最新有效状态作为补充上下文。
+    """
+    visited_streams: Set[str] = set()
+    result: List[Memory] = []
+
+    for hit in hits[:top_k]:
+        mem = hit.memory
+        if not mem.related_streams:
+            continue
+
+        base_activation = 1.5 if mem.salience >= 8 else 1.0
+
+        queue = deque()
+        for i, rsid in enumerate(mem.related_streams):
+            if rsid in visited_streams:
+                continue
+            link = mem.link_strength[i] if i < len(mem.link_strength) else 0.5
+            activation = base_activation * link
+            queue.append((rsid, activation, 1))
+
+        while queue:
+            rsid, activation, depth = queue.popleft()
+            if activation < min_activation or depth > max_depth:
+                continue
+            if rsid in visited_streams:
+                continue
+            visited_streams.add(rsid)
+
+            stream_mems = store.get_by_stream(rsid)
+            if stream_mems:
+                stream = EventStream(rsid, stream_mems)
+                state = stream.current_state()
+                if state:
+                    result.append(state)
+
+            # 继续传播到下一层
+            if stream_mems:
+                for m in stream_mems:
+                    if m.related_streams:
+                        for i, next_rsid in enumerate(m.related_streams):
+                            next_link = m.link_strength[i] if i < len(m.link_strength) else 0.5
+                            next_activation = activation * next_link
+                            queue.append((next_rsid, next_activation, depth + 1))
+
+    return result
 
 def recall(
     user_input: str,
@@ -94,7 +151,24 @@ def recall(
             final.append(mem)
     final.sort(key=lambda m: m.timestamp, reverse=True)
 
-    log.info("recall: selected %d context memories from %d streams", len(final), len(streams))
+    # === FSRS 检索后强化 ===
+    for hit in hits:
+        hit.memory.reinforce(current_date)
+        store.reinforce_memory(
+            hit.memory.memory_id, hit.memory.stability,
+            hit.memory.last_accessed, hit.memory.access_count,
+        )
+
+    # === 跨流因果激活传播 ===
+    related_context = _propagate_related(hits, store, top_k=TOP_K)
+    if related_context:
+        for m in related_context:
+            if m.memory_id not in seen:
+                seen.add(m.memory_id)
+                final.append(m)
+
+    final.sort(key=lambda m: m.timestamp, reverse=True)
+    log.info("recall: %d final (incl %d related)", len(final), len(related_context))
 
     context = "\n".join(
         f"- [{m.timestamp}] {m.content}{' [状态: '+m.status_update+']' if m.status_update else ''}"

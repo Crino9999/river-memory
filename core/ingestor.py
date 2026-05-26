@@ -9,7 +9,7 @@ from config import DEDUP_WINDOW_DAYS
 
 log = get_logger(__name__)
 
-EXTRACT_COORDINATES_PROMPT = """你是一个记忆提取助手。分析以下对话，提取物理坐标信息。
+EXTRACT_COORDINATES_PROMPT = """你是一个记忆提取助手。分析以下对话，提取物理坐标和记忆元数据。
 
 【用户消息】{user_msg}
 
@@ -17,19 +17,41 @@ EXTRACT_COORDINATES_PROMPT = """你是一个记忆提取助手。分析以下对
 
 【当前场景】日期: {current_date}，在场人物: {present_people}，当前环境: {current_env}
 
+【已有事件流】（每个流显示ID和最近记忆摘要）
+{existing_streams}
+
 请提取并返回JSON（只返回JSON，不要其他文字）：
 {{
-  "content": "角色对这段对话的第一人称记忆总结（1-2句话，用角色视角写）",
+  "content": "角色对这段对话的第一人称记忆总结（1-2句话）",
   "objects": ["在场/提及的人物名"],
-  "environment": "当前环境（如果对话暗示环境变化，更新为新环境）",
-  "status_update": "如果有状态变化或承诺（如欠钱、治伤、约定），写成 '主语=新状态' 格式。无变化则为 null"
+  "environment": "对话暗示的环境（无变化则用当前环境）",
+  "status_update": "如果有状态变化或承诺，写成 '主语=新状态'。无则为 null",
+  "salience": {{
+    "emotional": 1-10,
+    "relational": 1-10,
+    "narrative": 1-10
+  }},
+  "volatility": "low/medium/high",
+  "lifecycle_state": "pending/active/resolved/dream",
+  "related_streams": ["关联事件流ID（如果有因果关系）"],
+  "link_strength": [0.3-0.9],
+  "reinterpretation": {{"target_memory_id": "旧记忆ID", "new_understanding": "事后解读"}},
+  "correction": {{"target_memory_id": "旧记忆ID", "old_fact": "错误内容", "new_fact": "正确内容"}}
 }}
 
-规则：
-1. objects 提取所有被提到/在场的人物（不包括"我"和泛指）
-2. environment 如果能从对话推断 (如"我们回家吧"→"家") 则更新，否则用 current_env
-3. 如果对话无新信息（纯寒暄），content 写 "日常闲聊"，status_update 为 null
-4. 对话隐含信息要推断：如"还钱的事再说"意味着存在债务关系
+评分规则：
+1. salience 三维度：
+   - emotional: 情感冲击力 1=平淡 10=山崩地裂
+   - relational: 对角色间关系的影响 1=无 10=永久改变
+   - narrative: 对剧情走向的改变 1=日常流水 10=世界观颠覆
+2. volatility（情感易逝性）：
+   - low=刻骨铭心（创伤、永久关系改变、死亡）
+   - high=一时冲动（争吵后和好、单次激情）
+   - medium=其他
+3. lifecycle_state：待完成承诺→pending，已完成→resolved，正常→active，梦境/玩笑→dream
+4. related_streams：与其他事件流存在因果关系时才填写（如"骨折是因被推倒导致的"），没有就空数组
+5. reinterpretation：如果本对话重新解读了某条旧记忆（情感色彩变了但事实不变），需填写
+6. correction：如果本对话更正了某条旧记忆的事实错误（内容本身就是错的），需填写
 """
 
 STREAM_AFFILIATE_PROMPT = """你是一个事件流归类助手。判断新记忆属于哪个已有事件流，或者需要新建。
@@ -83,17 +105,28 @@ def extract_coordinates(
     current_date: str,
     present_people: List[str],
     current_env: str,
+    existing_streams: List[Tuple[str, str]] = None,
 ) -> dict:
     """
-    从对话中提取物理坐标：content, objects, environment, status_update
-    返回 dict 含 content / objects / environment / status_update
+    从对话中提取物理坐标 + v3 元数据。
+    返回 dict 含 content/objects/environment/status_update/
+                salience/volatility/lifecycle_state/related_streams/link_strength/
+                reinterpretation/correction
     """
+    streams_text = ""
+    if existing_streams:
+        streams_text = "\n".join(
+            f"  - ID: {sid} | 摘要: {snippet[:80]}"
+            for sid, snippet in existing_streams
+        )
+
     prompt = EXTRACT_COORDINATES_PROMPT.format(
         user_msg=user_msg,
         bot_reply=bot_reply,
         current_date=current_date,
         present_people=", ".join(present_people) if present_people else "无",
         current_env=current_env or "未知",
+        existing_streams=streams_text or "无已有事件流",
     )
 
     for attempt in range(3):
@@ -103,11 +136,26 @@ def extract_coordinates(
                 break
             data = _parse_json_safe(raw)
             if data:
+                # 计算综合 salience
+                s = data.get("salience", {})
+                if isinstance(s, dict):
+                    em, rl, na = s.get("emotional", 5), s.get("relational", 5), s.get("narrative", 5)
+                    salience_score = max(em, rl, na) * 0.7 + (em + rl + na) / 3 * 0.3
+                else:
+                    salience_score = int(s) if s else 5
+
                 return {
                     "content": data.get("content", "日常闲聊"),
                     "objects": data.get("objects", []) or [],
                     "environment": data.get("environment") or current_env,
                     "status_update": data.get("status_update"),
+                    "salience": round(salience_score),
+                    "volatility": data.get("volatility", "medium"),
+                    "lifecycle_state": data.get("lifecycle_state", "active"),
+                    "related_streams": data.get("related_streams", []) or [],
+                    "link_strength": data.get("link_strength", []) or [],
+                    "reinterpretation": data.get("reinterpretation"),
+                    "correction": data.get("correction"),
                 }
             log.warning("extract_coordinates: JSON parse failed, attempt %d, raw=%s", attempt + 1, raw[:100])
         except Exception as e:
@@ -119,6 +167,13 @@ def extract_coordinates(
         "objects": [],
         "environment": current_env,
         "status_update": None,
+        "salience": 5,
+        "volatility": "medium",
+        "lifecycle_state": "active",
+        "related_streams": [],
+        "link_strength": [],
+        "reinterpretation": None,
+        "correction": None,
     }
 
 
@@ -182,11 +237,31 @@ def _generate_stream_id(content: str, objects: List[str]) -> str:
     return f"evt_{obj_part}_{ts}"
 
 
+def _fsrs_init(salience: int, volatility: str) -> Tuple[float, float]:
+    """
+    FSRS 初始 stability 和 difficulty。
+    stability: 由 salience + volatility 共同决定
+    difficulty: D_init = 10 - salience
+    """
+    if salience >= 9:
+        stability = 9.0 if volatility == "low" else 2.0
+    elif salience >= 7:
+        stability = 8.3 if volatility == "low" else 2.0 if volatility == "high" else 4.5
+    elif salience >= 4:
+        stability = 4.5 if volatility == "low" else 1.5 if volatility == "high" else 2.3
+    else:
+        stability = 1.0
+
+    difficulty = max(1.0, 10 - salience)
+    return stability, difficulty
+
+
 class MemoryIngestor:
     """记忆自动入库管理器"""
 
-    def __init__(self, store: MemoryStore):
+    def __init__(self, store: MemoryStore, reflector=None):
         self._store = store
+        self._reflector = reflector
         self._id_counter = int(datetime.now().timestamp() * 1000)
 
     def _next_id(self) -> str:
@@ -243,16 +318,24 @@ class MemoryIngestor:
         log.info("ingest: start user='%s' date=%s", user_msg[:50], current_date)
 
         coords = extract_coordinates(
-            user_msg, bot_reply, current_date, present_people, current_env
+            user_msg, bot_reply, current_date, present_people, current_env,
+            existing_streams=self._get_existing_streams(),
         )
 
         content = coords["content"]
         objects = coords["objects"]
         environment = coords["environment"]
         status_update = coords.get("status_update")
+        salience = coords.get("salience", 5)
+        volatility = coords.get("volatility", "medium")
+        lifecycle_from_llm = coords.get("lifecycle_state", "active")
+        related_streams = coords.get("related_streams", [])
+        link_strength = coords.get("link_strength", [])
+        reinterpretation = coords.get("reinterpretation")
+        correction = coords.get("correction")
 
-        log.info("ingest: extracted content='%s' objects=%s env=%s status=%s",
-                 content[:60], objects, environment, status_update)
+        log.info("ingest: extracted content='%s' objects=%s env=%s status=%s salience=%d vol=%s",
+                 content[:60], objects, environment, status_update, salience, volatility)
 
         if self._is_duplicate(content, current_date):
             log.info("ingest: duplicate detected, skipping")
@@ -269,6 +352,9 @@ class MemoryIngestor:
         else:
             log.info("ingest: affiliated to stream %s (confidence=%.2f)", stream_id, confidence)
 
+        # === FSRS 初始化：根据 salience 和 volatility 设定 stability/difficulty ===
+        stability_init, difficulty_init = _fsrs_init(salience, volatility)
+
         mem = Memory(
             memory_id=self._next_id(),
             content=content,
@@ -278,7 +364,14 @@ class MemoryIngestor:
             environment=environment,
             status_update=status_update,
             confidence=confidence,
-            lifecycle="active",
+            lifecycle=lifecycle_from_llm,
+            salience=salience,
+            volatility=volatility,
+            stability=stability_init,
+            difficulty=difficulty_init,
+            related_streams=related_streams,
+            link_strength=link_strength,
+            provenance_context=f"日期{current_date}，人物{objects}，环境{environment}",
         )
 
         if confidence < 0.5:
@@ -290,10 +383,39 @@ class MemoryIngestor:
 
         try:
             self._store.add(mem)
-            log.info("ingest: stored memory %s to stream %s (conf=%.2f)", mem.memory_id, stream_id, confidence)
+            log.info("ingest: stored memory %s to stream %s (conf=%.2f salience=%d)",
+                     mem.memory_id, stream_id, confidence, salience)
         except Exception as e:
             log.error("ingest: store error for %s: %s", mem.memory_id, e)
             return []
+
+        # === 再巩固处理 ===
+        if reinterpretation:
+            target_id = reinterpretation.get("target_memory_id")
+            if target_id:
+                target = self._store.get_by_id(target_id)
+                if target:
+                    target.reinterpretation = reinterpretation.get("new_understanding", "")
+                    self._store.add(target)
+                    log.info("reinterpretation: updated %s", target_id)
+
+        if correction:
+            target_id = correction.get("target_memory_id")
+            if target_id:
+                target = self._store.get_by_id(target_id)
+                if target:
+                    entry = {
+                        "old": correction.get("old_fact", ""),
+                        "new": correction.get("new_fact", ""),
+                        "corrected_at": current_date,
+                    }
+                    target.correction_history = (target.correction_history or []) + [entry]
+                    self._store.add(target)
+                    log.info("correction: updated %s", target_id)
+
+        # === 反思引擎喂入 ===
+        if self._reflector:
+            self._reflector.feed(salience)
 
         return [mem]
 

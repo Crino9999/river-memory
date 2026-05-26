@@ -1,16 +1,15 @@
-"""模块B：关联索引 - 物理坐标多路探针（返回命中来源）"""
-from typing import List, Tuple, Set
+"""模块B：关联索引 - 物理坐标多路探针 + v3 三因子评分"""
+from typing import List, Tuple, Set, Dict
 from core.memory import Memory
 from core.store import MemoryStore, embed_texts
 from core.time_parser import date_score, is_overdue
-from config import PROBE_WEIGHTS
 from dataclasses import dataclass, field
 
 @dataclass
 class HitResult:
     memory: Memory
-    score: int
-    sources: Set[str] = field(default_factory=set)  # {"semantic","time","object","env"}
+    score: float
+    sources: Set[str] = field(default_factory=set)
 
 def search(
     user_input: str,
@@ -21,49 +20,75 @@ def search(
     top_k: int = 5,
 ) -> List[HitResult]:
     """
-    多路探针并行检索，返回 HitResult 列表（含命中来源），按分降序
-    得分规则从 config.PROBE_WEIGHTS 读取，日期使用距离计分
+    v3 三因子评分检索：
+    1. 过度拉取候选池 (top_k × 5)
+    2. 对每条候选计算：语义相关性 + salience/10 + retrieval_strength
+    3. 物理坐标多命中 (>=2根) 置顶
+    4. 截取 top_k
     """
     all_memories = store.list_all()
-    scores: dict = {}
-    sources: dict = {}
+    if not all_memories:
+        return []
 
-    def _add(mid, pts, src):
-        scores[mid] = scores.get(mid, 0) + pts
-        if mid not in sources:
-            sources[mid] = set()
-        sources[mid].add(src)
+    candidate_ids: Dict[str, float] = {}  # mid → semantic_sim
+    sources: Dict[str, Set[str]] = {}
 
-    # 探针1: 语义
+    def _add_candidate(mid, sim, src):
+        if mid not in candidate_ids or sim > candidate_ids[mid]:
+            candidate_ids[mid] = sim
+        sources.setdefault(mid, set()).add(src)
+
+    # === 语义探针：过度拉取 ===
     query_emb = embed_texts([user_input])[0]
-    semantic_results = store.vector_search(query_emb, top_k)
-    for mem, _ in semantic_results:
-        _add(mem.memory_id, PROBE_WEIGHTS["semantic"], "semantic")
+    semantic_results = store.vector_search(query_emb, top_k * 5)
+    for mem, sim in semantic_results:
+        _add_candidate(mem.memory_id, sim, "semantic")
 
-    # 探针2: 时间（距离计分，仅未完成承诺享过期加分）
+    # === 物理坐标探针：标记命中来源 + 加入候选池 ===
     for mem in all_memories:
+        got_any = False
+
+        # 时间探针
         ds = date_score(mem.timestamp, current_date, lifecycle=mem.lifecycle)
         if ds > 0:
-            _add(mem.memory_id, PROBE_WEIGHTS["time"] * ds // 3, "time")
+            _add_candidate(mem.memory_id, 0.0, "time")
+            got_any = True
 
-    # 探针3: 对象（支持别名匹配）
-    for mem in all_memories:
+        # 对象探针
         if _objects_match(mem.objects, present_people):
-            _add(mem.memory_id, PROBE_WEIGHTS["object"], "object")
+            _add_candidate(mem.memory_id, 0.0, "object")
+            got_any = True
 
-    # 探针4: 环境
-    for mem in all_memories:
-        if mem.environment == current_env:
-            _add(mem.memory_id, PROBE_WEIGHTS["env"], "env")
+        # 环境探针
+        if mem.environment and mem.environment == current_env:
+            _add_candidate(mem.memory_id, 0.0, "env")
+            got_any = True
 
-    # 合并排序
-    result = [HitResult(
-        memory=store.get_by_id(mid),
-        score=scores[mid],
-        sources=sources[mid],
-    ) for mid in scores if scores[mid] > 0]
-    result.sort(key=lambda x: -x.score)
-    return result[:top_k]
+    # === 三因子评分 ===
+    scored: List[Tuple[HitResult, int]] = []  # (HitResult, multi_hit_count)
+    for mid, semantic_sim in candidate_ids.items():
+        mem = store.get_by_id(mid)
+        if not mem:
+            continue
+
+        importance = mem.salience / 10.0
+        retrieval = mem.retrieval_strength
+
+        total = semantic_sim + importance + retrieval
+
+        # 多坐标命中计数
+        physical_hits = len(sources.get(mid, set()) & {"time", "object", "env"})
+        multi_hit = 1 if physical_hits >= 2 else 0
+
+        scored.append((
+            HitResult(memory=mem, score=round(total, 4), sources=sources.get(mid, set())),
+            multi_hit,
+        ))
+
+    # 排序：多命中置顶 → 总分降序
+    scored.sort(key=lambda x: (-x[1], -x[0].score))
+
+    return [h for h, _ in scored[:top_k]]
 
 
 ALIAS_MAP = {}  # 全局别名映射，可由外部配置
