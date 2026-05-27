@@ -44,9 +44,10 @@ MODEL = _env("MODEL", "deepseek-v4-flash")
 # Embedding 模型
 EMBED_MODEL = _env("EMBED_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
 
-# 存储路径
-CHROMA_DIR = _env("CHROMA_DIR", "./chroma_data")
-DB_PATH = _env("DB_PATH", "./river.db")
+# 存储路径（基于项目根目录的绝对路径，防止 cwd 不同导致数据丢失）
+BASE_DIR = Path(__file__).parent
+CHROMA_DIR = _env("CHROMA_DIR", str(BASE_DIR / "chroma_data"))
+DB_PATH = _env("DB_PATH", str(BASE_DIR / "river.db"))
 
 # 检索配置
 TOP_K = _env_int("TOP_K", 5)
@@ -66,7 +67,7 @@ LLM_TIMEOUT = _env_int("LLM_TIMEOUT", 60)
 
 # 日志配置
 LOG_LEVEL = _env("LOG_LEVEL", "INFO")
-LOG_FILE = _env("LOG_FILE", "./river.log")
+LOG_FILE = _env("LOG_FILE", str(BASE_DIR / "river.log"))
 
 # 会话配置
 SESSION_MAX_HISTORY = _env_int("SESSION_MAX_HISTORY", 20)
