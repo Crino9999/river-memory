@@ -259,9 +259,10 @@ def _fsrs_init(salience: int, volatility: str) -> Tuple[float, float]:
 class MemoryIngestor:
     """记忆自动入库管理器"""
 
-    def __init__(self, store: MemoryStore, reflector=None):
+    def __init__(self, store: MemoryStore, reflector=None, guard=None):
         self._store = store
         self._reflector = reflector
+        self._guard = guard
         self._id_counter = int(datetime.now().timestamp() * 1000)
 
     def _next_id(self) -> str:
@@ -352,8 +353,27 @@ class MemoryIngestor:
         else:
             log.info("ingest: affiliated to stream %s (confidence=%.2f)", stream_id, confidence)
 
-        # === FSRS 初始化：根据 salience 和 volatility 设定 stability/difficulty ===
+        # === FSRS 初始化 ===
         stability_init, difficulty_init = _fsrs_init(salience, volatility)
+
+        # === 一致性校验 ===
+        guard_warnings = []
+        guard_ok = True
+        actual_lifecycle = lifecycle_from_llm
+
+        if self._guard:
+            from core.consistency import CheckReport
+            report = self._guard.validate(
+                coords, present_people, current_env, stream_id
+            )
+            guard_warnings = report.warnings + report.blocks
+            guard_ok = report.passed
+            if report.recommended_lifecycle:
+                actual_lifecycle = report.recommended_lifecycle
+            if not guard_ok:
+                log.warning("guard blocked: %s", report.blocks[:3])
+            elif guard_warnings:
+                log.info("guard warnings: %s", guard_warnings[:3])
 
         mem = Memory(
             memory_id=self._next_id(),
@@ -364,7 +384,7 @@ class MemoryIngestor:
             environment=environment,
             status_update=status_update,
             confidence=confidence,
-            lifecycle=lifecycle_from_llm,
+            lifecycle=actual_lifecycle,
             salience=salience,
             volatility=volatility,
             stability=stability_init,
@@ -380,6 +400,21 @@ class MemoryIngestor:
                 self._store.add_review(mem.memory_id, content, confidence, "low confidence stream affiliation")
             except Exception as e:
                 log.error("Failed to add review item: %s", e)
+
+        if not guard_ok:
+            try:
+                reasons = "; ".join(guard_warnings[:3])
+                self._store.add_review(mem.memory_id, content, confidence,
+                                       f"consistency block: {reasons}")
+            except Exception as e:
+                log.error("Failed to add guard review item: %s", e)
+        elif guard_warnings:
+            try:
+                reasons = "; ".join(guard_warnings[:3])
+                self._store.add_review(mem.memory_id, content, confidence,
+                                       f"consistency warn: {reasons}")
+            except Exception as e:
+                log.error("Failed to add guard warning item: %s", e)
 
         try:
             self._store.add(mem)
